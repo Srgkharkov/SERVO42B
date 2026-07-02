@@ -1,4 +1,5 @@
 #include <SimpleFOC.h>
+#include "encoders/calibrated/CalibratedSensor.h"
 #include "./MagneticSensorA1333.h"
 
 #define IN1 PB6   // Фаза A+
@@ -19,20 +20,24 @@
 
 HardwareSerial Serial1(USART1);
 
-// MOONS PG22L45.2-20P020L0-17: native motor step angle 18 deg (before the 1:45 gearhead)
-// -> 20 full steps/rev -> 5 pole pairs. Encoder is mounted on the motor rotor shaft
-// (ahead of the gearhead), so it reads the same electrical revolutions as pole_pairs below.
+// MOONS PG22L45.2-20P020L0-17: 5 pole pairs, gear ratio 45.2:1 (both confirmed by the
+// open-loop 452-rotor-turn -> 10-output-turn test). Encoder is mounted on the motor
+// rotor shaft, ahead of the gearhead.
 StepperMotor motor = StepperMotor(5);
 
 int in1[] = {IN1, IN2};  // Фаза A
 int in2[] = {IN3, IN4};  // Фаза B
 StepperDriver2PWM driver = StepperDriver2PWM(VREF_A, in1, VREF_B, in2);
 
+const int LUT_SIZE = 256;
+float calibrationLut[LUT_SIZE];
+
 // 15 bit, 0x7FFF angle register, spi mode 3, 1MHz
 MagneticSensorA1333 sensor = MagneticSensorA1333(SENSOR_CS);
+CalibratedSensor sensor_calibrated = CalibratedSensor(sensor, LUT_SIZE, calibrationLut);
 SPIClass SPI_2(SENSOR_MOSI, SENSOR_MISO, SENSOR_SCLK);
 
-float target_velocity = _2PI * 45.2 / 60;
+float target_velocity = _2PI;
 
 void setup() {
   Serial1.begin(19200);
@@ -51,8 +56,7 @@ void setup() {
   driver.init();
   motor.linkDriver(&driver);
 
-  // keep every voltage (= VREF volts) at/under 0.5V -> 0.5A, the motor's rated current
-  motor.voltage_sensor_align = 0.5;
+  motor.voltage_sensor_align = 2;
   motor.voltage_limit = 0.5;
   motor.controller = MotionControlType::velocity;
   motor.PID_velocity.P = 0.2;
@@ -61,11 +65,23 @@ void setup() {
   motor.useMonitoring(Serial1);
   motor.init();
 
-  // aligns against the raw (uncalibrated) sensor reading every boot - no LUT,
-  // no EEPROM caching yet, just closed-loop commutation from the encoder
+  // runs every boot - no EEPROM caching yet. Builds a LUT correcting the raw A1333's
+  // eccentricity/nonlinearity (this is what was causing the vibration in closed loop),
+  // and re-derives zero_electric_angle from an averaged forward/backward sweep instead
+  // of the single quick cycle initFOC() uses on its own - much less sensitive to noise.
+  sensor_calibrated.voltage_calibration = 0.5;
+  sensor_calibrated.calibrate(motor, 100);
+
+  // linking the calibrated sensor to the motor
+  motor.linkSensor(&sensor_calibrated);
+
+  // zero_electric_angle/sensor_direction are already known from calibrate() above,
+  // so this won't re-run the alignment procedure
   motor.initFOC();
 
   Serial1.println(F("Motor ready."));
+
+  _delay(1000);
 }
 
 void loop() {
