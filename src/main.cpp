@@ -42,13 +42,18 @@ void setup() {
   // it is not yet linked to the motor
   sensor.init(&SPI_2);
 
-  driver.voltage_power_supply = 12;
+  // VREF_A/B don't drive the phase windings directly - they feed an RC-filtered
+  // analog current reference into each A4950 driver's VREF pin (external sense
+  // resistor RS = 0.1 ohm on LSS). ITripMax = VREF / (10 * RS), so voltage_power_supply
+  // here is the filtered VREF ceiling at 100% PWM duty (STM32 3.3V logic), not the
+  // 12V motor supply (VBB), which only powers the bridge outputs to the winding.
+  // 0.5A target -> VREF = 0.5A * 10 * 0.1ohm = 0.5V
+  driver.voltage_power_supply = 3.3;
   driver.init();
   motor.linkDriver(&driver);
 
   motor.controller = MotionControlType::velocity_openloop;
-  // rated 0.5A/phase @ 6.4 ohm/phase -> ~3.2V continuous, stay at/under that
-  motor.voltage_limit = 3;
+  motor.voltage_limit = 0.5;
 
   motor.useMonitoring(Serial1);
   motor.init();
