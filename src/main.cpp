@@ -32,43 +32,43 @@ StepperDriver2PWM driver = StepperDriver2PWM(VREF_A, in1, VREF_B, in2);
 MagneticSensorA1333 sensor = MagneticSensorA1333(SENSOR_CS);
 SPIClass SPI_2(SENSOR_MOSI, SENSOR_MISO, SENSOR_SCLK);
 
-// open-loop test target velocity
-float target_velocity = _2PI / 4;  // ~0.25 rev/s
+float target_velocity = _2PI * 45.2 / 60;
 
 void setup() {
   Serial1.begin(19200);
 
-  // encoder is read out only for verification during this open-loop test,
-  // it is not yet linked to the motor
   sensor.init(&SPI_2);
+  motor.linkSensor(&sensor);
+
+  motor.foc_modulation = FOCModulationType::SinePWM;
 
   // VREF_A/B don't drive the phase windings directly - they feed an RC-filtered
   // analog current reference into each A4950 driver's VREF pin (external sense
   // resistor RS = 0.1 ohm on LSS). ITripMax = VREF / (10 * RS), so voltage_power_supply
   // here is the filtered VREF ceiling at 100% PWM duty (STM32 3.3V logic), not the
   // 12V motor supply (VBB), which only powers the bridge outputs to the winding.
-  // 0.5A target -> VREF = 0.5A * 10 * 0.1ohm = 0.5V
   driver.voltage_power_supply = 3.3;
   driver.init();
   motor.linkDriver(&driver);
 
-  motor.controller = MotionControlType::velocity_openloop;
+  // keep every voltage (= VREF volts) at/under 0.5V -> 0.5A, the motor's rated current
+  motor.voltage_sensor_align = 0.5;
   motor.voltage_limit = 0.5;
+  motor.controller = MotionControlType::velocity;
+  motor.PID_velocity.P = 0.2;
+  motor.LPF_velocity.Tf = 0.01;
 
   motor.useMonitoring(Serial1);
   motor.init();
 
-  Serial1.println(F("Open-loop test ready."));
+  // aligns against the raw (uncalibrated) sensor reading every boot - no LUT,
+  // no EEPROM caching yet, just closed-loop commutation from the encoder
+  motor.initFOC();
+
+  Serial1.println(F("Motor ready."));
 }
 
 void loop() {
+  motor.loopFOC();
   motor.move(target_velocity);
-
-  sensor.update();
-  static unsigned long last_print = 0;
-  if (millis() - last_print > 200) {
-    last_print = millis();
-    Serial1.print(F("sensor angle: "));
-    Serial1.println(sensor.getAngle());
-  }
 }
